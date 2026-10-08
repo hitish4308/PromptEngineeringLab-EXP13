@@ -1,55 +1,45 @@
 ﻿# Prompt Engineering Lab - Experiment 13
 
-## RAG Chain with LCEL
+## LLM Agent with LangGraph (ReAct)
 
-Builds a full Retrieval-Augmented Generation pipeline: retrieve relevant
-chunks, format a grounded prompt, generate an answer with an LLM.
+Builds a ReAct agent with two tools: get_weather and calculate. The
+agent decides which tools to call, in what order, and combines results
+into a final answer.
 
-## Pipeline Stages
+## The Task
 
-| Stage | Component | Input | Output |
-|-------|-----------|-------|--------|
-| Index | RecursiveCharacterTextSplitter + NVIDIAEmbeddings + FAISS | Sample text | Vector store |
-| Retrieve | FAISS retriever (k=2) | Question | 2 Document objects |
-| Format | Custom join function | Documents | Single context string |
-| Prompt | ChatPromptTemplate | context + question | Formatted messages |
-| Generate | ChatNVIDIA (openai/gpt-oss-20b) | Messages | AIMessage |
-| Parse | StrOutputParser | AIMessage | Plain string |
+"What is the current temperature in London in Fahrenheit? Also
+calculate 15% of 320 and add it to the temperature."
 
-## The LCEL Chain
+The agent must:
 
-    {
-        "context": retriever | format_docs,
-        "question": RunnablePassthrough(),
-    }
-    | prompt
-    | llm
-    | parser
+1. Call get_weather("London") -> 18°C
+2. Convert Celsius to Fahrenheit using calculate -> 64.4°F
+3. Compute 15% of 320 using calculate -> 48.0
+4. Add the two using calculate -> 112.4
+5. Produce a final answer
 
-The dictionary at the front creates two branches from one input:
+## Tools
 
-- **context branch** - runs the retriever on the question, then joins
-  the retrieved documents into a single string
-- **question branch** - passes the original question through unchanged
+| Tool | Description |
+|------|-------------|
+| get_weather(city) | Returns the current temperature for a city in Celsius (mock data) |
+| calculate(expression) | Evaluates basic math expressions (+, -, *, /, **) |
 
-Both feed the prompt template, which then goes to the LLM.
+The docstring of each tool is its only description to the model. Precise
+docstrings are essential for correct tool selection.
+
+## The ReAct Loop
+
+    THOUGHT  ->  ACTION  ->  OBSERVATION  ->  REPEAT  ->  FINAL ANSWER
+
+The agent repeats this loop until it has enough information to answer.
 
 ## Model and Parameters
 
-- Embedding model: nvidia/nemotron-3-embed-1b
-- LLM: openai/gpt-oss-20b
-- Temperature: 0.2
-- Retrieval: k=2
-
-## Why NVIDIA, not OpenAI
-
-This environment uses NVIDIA NIM. We use:
-
-- ChatNVIDIA from langchain-nvidia-ai-endpoints
-- NVIDIAEmbeddings from the same package
-
-Both are official LangChain integrations and work with the same
-NVIDIA_API_KEY already in .env.
+- LLM: openai/gpt-oss-20b (via ChatNVIDIA)
+- Temperature: 0.0 (deterministic tool selection)
+- Recursion limit: 25 (caps iterations)
 
 ## Setup
 
@@ -60,56 +50,53 @@ Reuse the environment from Experiment 1:
 
 ## Run
 
-    python rag_chain.py
+    python react_agent.py
 
 ## Expected Output
 
-For each of three test questions:
-
-- The question
-- The generated answer (grounded in the retrieved chunks)
-- The retrieved chunks (for transparency)
-
-Followed by a summary of RAG chain concepts.
+- Agent execution trace (every human, AI, and tool message)
+- Final answer
+- A summary of ReAct agent concepts
 
 ## Key Findings
 
-1. **Retrieval grounds the answer** - the LLM answers from the retrieved
-   chunks, not from general knowledge. This reduces hallucination.
+1. **Tool docstrings are the API** - the model picks tools based on the
+   docstring alone. Ambiguous descriptions cause wrong tool calls.
 
-2. **Prompt design matters** - instructing the model to reply
-   "I don't know" when the answer is not in the context prevents
-   fabrication.
+2. **The agent plans** - it breaks the multi-step query into individual
+   calls without being told to. This is the reasoning half of ReAct.
 
-3. **Top-k is a tradeoff** - too few chunks may miss relevant info;
-   too many dilute the prompt with off-topic content.
+3. **Observations drive the next step** - the agent uses tool outputs
+   rather than its own assumptions. This grounds the answer.
 
-4. **Quality depends on both halves** - good retrieval without good
-   generation gives ungrounded answers; good generation without good
-   retrieval gives confident mistakes.
+4. **Temperature 0 matters** - with higher temperatures the agent may
+   pick the wrong tool or produce unstable reasoning.
+
+5. **Recursion limits prevent runaway loops** - always set a cap when
+   the agent has multiple tools.
 
 ## Troubleshooting
 
-### Error code: 410 - Gone
+### Error: 410 Gone on the LLM model
 
-The embedding or LLM model was retired. Check the live list:
+NVIDIA retired the model. Swap LLM_MODEL to a live one:
 
-    curl -s -H "Authorization: Bearer $env:NVIDIA_API_KEY" https://integrate.api.nvidia.com/v1/models
+    LLM_MODEL = "nvidia/nemotron-3-super-120b-a12b"
+    LLM_MODEL = "meta/llama-3.3-70b-instruct"
 
-Look for entries containing "embed" (for embeddings) or "instruct"
-(for generation), and swap the model ID.
+### Agent loops forever
 
-### Answer is "I don't know" for every question
+Reduce the recursion limit or tighten the tool docstrings. Ensure
+each tool has an unambiguous purpose.
 
-Retrieval is failing - the top-k chunks don't contain the answer. Try:
+### Tool is never called
 
-- Increasing k to 3 or 4
-- Reducing chunk size to 200 chars
-- Ensuring the sample text actually contains the information
+The docstring may not match the query vocabulary. Try rewriting it
+to include the exact words the user is likely to use.
 
-### ImportError: langchain_nvidia_ai_endpoints
+### ModuleNotFoundError: langgraph
 
-    python -m pip install langchain-nvidia-ai-endpoints
+    python -m pip install langgraph
 
 ## Security
 
